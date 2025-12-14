@@ -43,19 +43,22 @@ app.post('/webhook/create-event', async (req, res) => {
     let toolCallId = null; // For error responses to Vapi
 
     // Case 0: Vapi with assistant wrapper (common in some integrations)
-    if (req.body.assistant && req.body.assistant.tool_calls && req.body.assistant.tool_calls.length > 0) {
+    if (req.body.assistant && req.body.assistant.toolCalls && req.body.assistant.toolCalls.length > 0) {
       console.log('Case 0: Detected VAPI format with assistant wrapper');
-      const toolCall = req.body.assistant.tool_calls[0];
+      const toolCall = req.body.assistant.toolCalls[0];
       toolCallId = toolCall.id;
-      const argsString = toolCall.function.arguments;
-      console.log('Raw arguments string:', argsString);
+      const args = toolCall.function.arguments;
+      console.log('Arguments type:', typeof args);
+      console.log('Raw arguments:', args);
       try {
-        let cleanArgs = argsString.trim();
-        // Unescape any double-escaped quotes (e.g., \" -> ")
-        cleanArgs = cleanArgs.replace(/\\"/g, '"');
-        const args = JSON.parse(cleanArgs);
-        console.log('Parsed arguments:', args);
-        ({ name, date, time, title } = args);
+        let parsedArgs = args;
+        if (typeof args === 'string') {
+          let cleanArgs = args.trim();
+          cleanArgs = cleanArgs.replace(/\\"/g, '"');
+          parsedArgs = JSON.parse(cleanArgs);
+        }
+        console.log('Parsed arguments:', parsedArgs);
+        ({ name, date, time, title } = parsedArgs);
       } catch (parseError) {
         console.error('Failed to parse arguments JSON:', parseError);
         return res.status(400).json({
@@ -65,19 +68,23 @@ app.post('/webhook/create-event', async (req, res) => {
         });
       }
     }
-    // Case 1: Standard VAPI format - wrapped in message.tool_calls
-    else if (req.body.message && req.body.message.tool_calls && req.body.message.tool_calls.length > 0) {
-      console.log('Case 1: Detected VAPI format with message wrapper');
-      const toolCall = req.body.message.tool_calls[0];
+    // Case 1: Standard VAPI format - wrapped in message.toolCalls (camelCase)
+    else if (req.body.message && req.body.message.toolCalls && req.body.message.toolCalls.length > 0) {
+      console.log('Case 1: Detected VAPI format with message.toolCalls wrapper');
+      const toolCall = req.body.message.toolCalls[0];
       toolCallId = toolCall.id;
-      const argsString = toolCall.function.arguments;
-      console.log('Raw arguments string:', argsString);
+      const args = toolCall.function.arguments;
+      console.log('Arguments type:', typeof args);
+      console.log('Raw arguments:', args);
       try {
-        let cleanArgs = argsString.trim();
-        cleanArgs = cleanArgs.replace(/\\"/g, '"');
-        const args = JSON.parse(cleanArgs);
-        console.log('Parsed arguments:', args);
-        ({ name, date, time, title } = args);
+        let parsedArgs = args;
+        if (typeof args === 'string') {
+          let cleanArgs = args.trim();
+          cleanArgs = cleanArgs.replace(/\\"/g, '"');
+          parsedArgs = JSON.parse(cleanArgs);
+        }
+        console.log('Parsed arguments:', parsedArgs);
+        ({ name, date, time, title } = parsedArgs);
       } catch (parseError) {
         console.error('Failed to parse arguments JSON:', parseError);
         return res.status(400).json({
@@ -87,19 +94,49 @@ app.post('/webhook/create-event', async (req, res) => {
         });
       }
     }
-    // Case 2: Alternative VAPI format - tool_calls at root level
-    else if (req.body.tool_calls && req.body.tool_calls.length > 0) {
-      console.log('Case 2: Detected VAPI format with tool_calls at root');
-      const toolCall = req.body.tool_calls[0];
+    // Case 1b: Fallback to message.toolCallList if toolCalls empty
+    else if (req.body.message && req.body.message.toolCallList && req.body.message.toolCallList.length > 0) {
+      console.log('Case 1b: Detected VAPI format with message.toolCallList fallback');
+      const toolCall = req.body.message.toolCallList[0];
       toolCallId = toolCall.id;
-      const argsString = toolCall.function.arguments;
-      console.log('Raw arguments string:', argsString);
+      const args = toolCall.function.arguments;
+      console.log('Arguments type:', typeof args);
+      console.log('Raw arguments:', args);
       try {
-        let cleanArgs = argsString.trim();
-        cleanArgs = cleanArgs.replace(/\\"/g, '"');
-        const args = JSON.parse(cleanArgs);
-        console.log('Parsed arguments:', args);
-        ({ name, date, time, title } = args);
+        let parsedArgs = args;
+        if (typeof args === 'string') {
+          let cleanArgs = args.trim();
+          cleanArgs = cleanArgs.replace(/\\"/g, '"');
+          parsedArgs = JSON.parse(cleanArgs);
+        }
+        console.log('Parsed arguments:', parsedArgs);
+        ({ name, date, time, title } = parsedArgs);
+      } catch (parseError) {
+        console.error('Failed to parse arguments JSON:', parseError);
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid JSON in tool call arguments',
+          tool_call_id: toolCallId
+        });
+      }
+    }
+    // Case 2: Alternative VAPI format - toolCalls at root level (camelCase)
+    else if (req.body.toolCalls && req.body.toolCalls.length > 0) {
+      console.log('Case 2: Detected VAPI format with toolCalls at root');
+      const toolCall = req.body.toolCalls[0];
+      toolCallId = toolCall.id;
+      const args = toolCall.function.arguments;
+      console.log('Arguments type:', typeof args);
+      console.log('Raw arguments:', args);
+      try {
+        let parsedArgs = args;
+        if (typeof args === 'string') {
+          let cleanArgs = args.trim();
+          cleanArgs = cleanArgs.replace(/\\"/g, '"');
+          parsedArgs = JSON.parse(cleanArgs);
+        }
+        console.log('Parsed arguments:', parsedArgs);
+        ({ name, date, time, title } = parsedArgs);
       } catch (parseError) {
         console.error('Failed to parse arguments JSON:', parseError);
         return res.status(400).json({
