@@ -30,19 +30,70 @@ app.get('/', (req, res) => {
   });
 });
 
-// Webhook endpoint for VAPI to create calendar events (with detailed logging)
+// Webhook endpoint for VAPI to create calendar events
 app.post('/webhook/create-event', async (req, res) => {
   try {
-    // LOG EVERYTHING FOR DEBUGGING
     console.log('=== WEBHOOK REQUEST RECEIVED ===');
-    console.log('Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('Body:', JSON.stringify(req.body, null, 2));
-    console.log('Body type:', typeof req.body);
-    console.log('Body keys:', req.body ? Object.keys(req.body) : 'No body');
-    console.log('================================');
+    console.log('Full request body:', JSON.stringify(req.body, null, 2));
+    if (req.body) {
+      console.log('Body keys:', Object.keys(req.body));
+    }
 
-    // Extract data from VAPI request
-    const { name, date, time, title } = req.body || {};
+    let name, date, time, title;
+
+    // Case 1: Standard VAPI format - wrapped in message.tool_calls
+    if (req.body.message && req.body.message.tool_calls && req.body.message.tool_calls.length > 0) {
+      console.log('Detected VAPI format with message wrapper');
+      const toolCall = req.body.message.tool_calls[0];
+      const argsString = toolCall.function.arguments;
+      console.log('Arguments string:', argsString);
+
+      try {
+        const args = JSON.parse(argsString);
+        console.log('Parsed arguments:', args);
+        ({ name, date, time, title } = args);
+      } catch (parseError) {
+        console.error('Failed to parse arguments JSON:', parseError);
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid JSON in tool call arguments'
+        });
+      }
+    }
+    // Case 2: Alternative VAPI format - tool_calls at root level
+    else if (req.body.tool_calls && req.body.tool_calls.length > 0) {
+      console.log('Detected VAPI format with tool_calls at root');
+      const toolCall = req.body.tool_calls[0];
+      const argsString = toolCall.function.arguments;
+      console.log('Arguments string:', argsString);
+
+      try {
+        const args = JSON.parse(argsString);
+        console.log('Parsed arguments:', args);
+        ({ name, date, time, title } = args);
+      } catch (parseError) {
+        console.error('Failed to parse arguments JSON:', parseError);
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid JSON in tool call arguments'
+        });
+      }
+    }
+    // Case 3: Direct format (useful for curl/testing)
+    else if (req.body && (req.body.name || req.body.date || req.body.time)) {
+      console.log('Detected direct format (testing/curl)');
+      ({ name, date, time, title } = req.body);
+    }
+    // Unknown format
+    else {
+      console.error('Unknown request format');
+      console.error('Request body:', JSON.stringify(req.body, null, 2));
+      return res.status(400).json({
+        success: false,
+        error: 'Unknown request format. Could not extract parameters.',
+        receivedBody: req.body
+      });
+    }
 
     console.log('Extracted values:');
     console.log(' name:', name, '(type:', typeof name, ')');
@@ -58,7 +109,6 @@ app.post('/webhook/create-event', async (req, res) => {
         error: 'Missing required field: name'
       });
     }
-
     if (!date) {
       console.error('ERROR: Missing date');
       return res.status(400).json({
@@ -66,7 +116,6 @@ app.post('/webhook/create-event', async (req, res) => {
         error: 'Missing required field: date'
       });
     }
-
     if (!time) {
       console.error('ERROR: Missing time');
       return res.status(400).json({
@@ -75,14 +124,16 @@ app.post('/webhook/create-event', async (req, res) => {
       });
     }
 
-    console.log('All validations passed. Calling calendar service...');
+    console.log('✅ All validations passed. Creating calendar event...');
 
     // Call Google Calendar service
     const result = await createCalendarEvent(name, date, time, title);
 
-    console.log('Calendar service returned:', result);
+    console.log('✅ Calendar event created successfully!');
+    console.log('Event ID:', result.eventId);
+    console.log('Event Link:', result.eventLink);
 
-    // Prepare success response
+    // Send success response back to VAPI
     const response = {
       success: true,
       message: `Calendar event created successfully for ${name}`,
@@ -95,8 +146,7 @@ app.post('/webhook/create-event', async (req, res) => {
       }
     };
 
-    console.log('Sending response to VAPI:', JSON.stringify(response, null, 2));
-    
+    console.log('Sending success response to VAPI:', JSON.stringify(response, null, 2));
     res.status(200).json(response);
 
   } catch (error) {
@@ -108,8 +158,7 @@ app.post('/webhook/create-event', async (req, res) => {
     // Send error response back to VAPI
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to create calendar event',
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message || 'Failed to create calendar event'
     });
   }
 });
