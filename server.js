@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors()); // Allow requests from VAPI
-app.use(express.json()); // Parse JSON request bodies
+app.use(express.json({ limit: '10mb' })); // Parse JSON request bodies, with limit for safety
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -40,48 +40,78 @@ app.post('/webhook/create-event', async (req, res) => {
     }
 
     let name, date, time, title;
+    let toolCallId = null; // For error responses to Vapi
 
-    // Case 1: Standard VAPI format - wrapped in message.tool_calls
-    if (req.body.message && req.body.message.tool_calls && req.body.message.tool_calls.length > 0) {
-      console.log('Detected VAPI format with message wrapper');
-      const toolCall = req.body.message.tool_calls[0];
+    // Case 0: Vapi with assistant wrapper (common in some integrations)
+    if (req.body.assistant && req.body.assistant.tool_calls && req.body.assistant.tool_calls.length > 0) {
+      console.log('Case 0: Detected VAPI format with assistant wrapper');
+      const toolCall = req.body.assistant.tool_calls[0];
+      toolCallId = toolCall.id;
       const argsString = toolCall.function.arguments;
-      console.log('Arguments string:', argsString);
-
+      console.log('Raw arguments string:', argsString);
       try {
-        const args = JSON.parse(argsString);
+        let cleanArgs = argsString.trim();
+        // Unescape any double-escaped quotes (e.g., \" -> ")
+        cleanArgs = cleanArgs.replace(/\\"/g, '"');
+        const args = JSON.parse(cleanArgs);
         console.log('Parsed arguments:', args);
         ({ name, date, time, title } = args);
       } catch (parseError) {
         console.error('Failed to parse arguments JSON:', parseError);
         return res.status(400).json({
           success: false,
-          error: 'Invalid JSON in tool call arguments'
+          error: 'Invalid JSON in tool call arguments',
+          tool_call_id: toolCallId
+        });
+      }
+    }
+    // Case 1: Standard VAPI format - wrapped in message.tool_calls
+    else if (req.body.message && req.body.message.tool_calls && req.body.message.tool_calls.length > 0) {
+      console.log('Case 1: Detected VAPI format with message wrapper');
+      const toolCall = req.body.message.tool_calls[0];
+      toolCallId = toolCall.id;
+      const argsString = toolCall.function.arguments;
+      console.log('Raw arguments string:', argsString);
+      try {
+        let cleanArgs = argsString.trim();
+        cleanArgs = cleanArgs.replace(/\\"/g, '"');
+        const args = JSON.parse(cleanArgs);
+        console.log('Parsed arguments:', args);
+        ({ name, date, time, title } = args);
+      } catch (parseError) {
+        console.error('Failed to parse arguments JSON:', parseError);
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid JSON in tool call arguments',
+          tool_call_id: toolCallId
         });
       }
     }
     // Case 2: Alternative VAPI format - tool_calls at root level
     else if (req.body.tool_calls && req.body.tool_calls.length > 0) {
-      console.log('Detected VAPI format with tool_calls at root');
+      console.log('Case 2: Detected VAPI format with tool_calls at root');
       const toolCall = req.body.tool_calls[0];
+      toolCallId = toolCall.id;
       const argsString = toolCall.function.arguments;
-      console.log('Arguments string:', argsString);
-
+      console.log('Raw arguments string:', argsString);
       try {
-        const args = JSON.parse(argsString);
+        let cleanArgs = argsString.trim();
+        cleanArgs = cleanArgs.replace(/\\"/g, '"');
+        const args = JSON.parse(cleanArgs);
         console.log('Parsed arguments:', args);
         ({ name, date, time, title } = args);
       } catch (parseError) {
         console.error('Failed to parse arguments JSON:', parseError);
         return res.status(400).json({
           success: false,
-          error: 'Invalid JSON in tool call arguments'
+          error: 'Invalid JSON in tool call arguments',
+          tool_call_id: toolCallId
         });
       }
     }
     // Case 3: Direct format (useful for curl/testing)
     else if (req.body && (req.body.name || req.body.date || req.body.time)) {
-      console.log('Detected direct format (testing/curl)');
+      console.log('Case 3: Detected direct format (testing/curl)');
       ({ name, date, time, title } = req.body);
     }
     // Unknown format
@@ -95,43 +125,63 @@ app.post('/webhook/create-event', async (req, res) => {
       });
     }
 
+    // Sanitize inputs (trim strings)
+    name = (name || '').trim();
+    date = (date || '').trim();
+    time = (time || '').trim();
+    title = title ? title.trim() : undefined;
+
     console.log('Extracted values:');
     console.log(' name:', name, '(type:', typeof name, ')');
     console.log(' date:', date, '(type:', typeof date, ')');
     console.log(' time:', time, '(type:', typeof time, ')');
     console.log(' title:', title, '(type:', typeof title, ')');
 
-    // Validate required fields
+    // Validate required fields (title is optional)
     if (!name) {
       console.error('ERROR: Missing name');
       return res.status(400).json({
         success: false,
-        error: 'Missing required field: name'
+        error: 'Missing required field: name',
+        tool_call_id: toolCallId
       });
     }
     if (!date) {
       console.error('ERROR: Missing date');
       return res.status(400).json({
         success: false,
-        error: 'Missing required field: date'
+        error: 'Missing required field: date',
+        tool_call_id: toolCallId
       });
     }
     if (!time) {
       console.error('ERROR: Missing time');
       return res.status(400).json({
         success: false,
-        error: 'Missing required field: time'
+        error: 'Missing required field: time',
+        tool_call_id: toolCallId
       });
     }
 
     console.log('✅ All validations passed. Creating calendar event...');
 
     // Call Google Calendar service
-    const result = await createCalendarEvent(name, date, time, title);
-
-    console.log('✅ Calendar event created successfully!');
-    console.log('Event ID:', result.eventId);
-    console.log('Event Link:', result.eventLink);
+    let result;
+    try {
+      result = await createCalendarEvent(name, date, time, title);
+      console.log('✅ Calendar event created successfully!');
+      console.log('Event ID:', result.eventId);
+      console.log('Event Link:', result.eventLink);
+    } catch (serviceError) {
+      console.error('❌ Service error in createCalendarEvent:', serviceError.message);
+      console.error('Full service error:', serviceError);
+      // Still return 200 for Vapi, but flag error
+      return res.status(200).json({
+        success: false,
+        error: `Failed to create event: ${serviceError.message}`,
+        tool_call_id: toolCallId
+      });
+    }
 
     // Send success response back to VAPI
     const response = {
